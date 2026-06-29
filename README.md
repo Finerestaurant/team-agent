@@ -9,6 +9,7 @@ pi install npm:@finerestaurant/team-agent
 
 > **Work in progress** — this project is under active development and not yet ready for general use.
 > npm publish will happen once the core milestones are complete. Until then, expect breaking changes.
+
 https://github.com/user-attachments/assets/6decd8d0-81bd-4863-bd82-635d00281d4a
 
 ---
