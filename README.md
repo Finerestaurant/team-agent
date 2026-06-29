@@ -1,7 +1,3 @@
-
-
-
-
 # @finerestaurant/team-agent
 
 Multi-agent team orchestration for [pi](https://pi.dev). Plug in a cartridge, describe what you need,
@@ -65,6 +61,9 @@ with pi — just describe what you want done and the team handles the rest.
 
 **Cartridge wizard** — `/cartridge-manager` → `Create new cartridge…` walks you through designing
 a team interactively. The wizard generates all boilerplate; you fill in the domain tool implementations.
+
+https://github.com/user-attachments/assets/2c155582-8bc2-47e6-b824-12a29f88d617
+
 
 ---
 
