@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext"],
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "outDir": "dist",
+    "types": ["bun-types"],
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*"]
+}

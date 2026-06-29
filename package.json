@@ -1,0 +1,39 @@
+{
+  "name": "@finerestaurant/team-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Multi-agent team orchestration framework for pi — define your agents, tools, and team structure as a cartridge.",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "multi-agent", "agent"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./src/entry.ts"]
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src/**/*",
+    "tsconfig.json"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true },
+    "typebox": { "optional": true }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.9",
+    "@earendil-works/pi-tui": "^0.79.9",
+    "typebox": "^1.1.38",
+    "@types/node": "^22.15.2",
+    "bun-types": "latest",
+    "typescript": "^5.8.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}
