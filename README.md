@@ -1,3 +1,4 @@
+
 # @finerestaurant/team-agent
 
 Multi-agent team orchestration for [pi](https://pi.dev). Plug in a cartridge, describe what you need,
@@ -6,6 +7,7 @@ and a team of specialized agents handles it — each with bounded context, worki
 ```sh
 pi install npm:@finerestaurant/team-agent
 ```
+https://github.com/user-attachments/assets/6decd8d0-81bd-4863-bd82-635d00281d4a
 
 ---
 
