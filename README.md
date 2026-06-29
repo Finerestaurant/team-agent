@@ -58,10 +58,27 @@ with pi — just describe what you want done and the team handles the rest.
 
 **`await_task` tool** — sub-agents spawn children and block until they complete.
 
-**Pause / resume** — `Ctrl+/` pauses the running task mid-flight. Resume by sending a message.
-
 **Cartridge wizard** — `/cartridge-manager` → `Create new cartridge…` walks you through designing
 a team interactively. The wizard generates all boilerplate; you fill in the domain tool implementations.
+
+---
+
+## Mid-flight control
+
+Long tasks don't always go as planned. `Ctrl+/` pauses the entire team mid-flight —
+every agent freezes in place, with the full delegation hierarchy, team tree, and each
+agent's session memory intact.
+
+```
+  my-team
+  ├── ⏸ manager          ← paused mid-delegation
+  │   ├── ⏸ researcher   ← paused with its search context
+  │   └── ⏸ writer       ← paused mid-draft
+  └── ✓ reviewer         ← already done, result preserved
+```
+
+Send a message to redirect or clarify — then the team resumes from exactly where it stopped,
+with no lost context. No need to restart from scratch when a task drifts.
 
 ---
 
