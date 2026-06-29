@@ -1,4 +1,7 @@
 
+
+
+
 # @finerestaurant/team-agent
 
 Multi-agent team orchestration for [pi](https://pi.dev). Plug in a cartridge, describe what you need,
@@ -70,6 +73,10 @@ a team interactively. The wizard generates all boilerplate; you fill in the doma
 Long tasks don't always go as planned. `Ctrl+/` pauses the entire team mid-flight —
 every agent freezes in place, with the full delegation hierarchy, team tree, and each
 agent's session memory intact.
+
+
+https://github.com/user-attachments/assets/e05260e2-bff9-4311-9012-5779f2be10bc
+
 
 ```
   my-team
