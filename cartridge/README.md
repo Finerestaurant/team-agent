@@ -1,16 +1,5 @@
 # cartridge/
 
-This is the cartridge slot. Clone a cartridge from [team-agent-cartridges](https://github.com/anthonypark6904/team-agent-cartridges) here:
+This is the cartridge slot. Cartridge install instructions will be updated soon.
 
-```sh
-git clone https://github.com/anthonypark6904/team-agent-cartridges .
-```
-
-Or a specific cartridge only:
-
-```sh
-git clone --filter=blob:none --sparse https://github.com/anthonypark6904/team-agent-cartridges .
-git sparse-checkout set kicad
-```
-
-After cloning, the active cartridge is loaded from `cartridge/<name>/`.
+The active cartridge is loaded from `cartridge/<name>/` based on `cartridge/.active`.
