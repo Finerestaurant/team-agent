@@ -1,12 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import * as panel from "../ui/panel.ts"
-import { handleCreateCartridge } from "./cartridge-creator.ts"
+import * as panel from "../../ui/panel.ts"
+import { handleCreateCartridge } from "./creator.ts"
 
 const CARTRIDGE_DIR = path.join(
   path.dirname(new URL(import.meta.url).pathname),
-  "../..",
+  "../../..",
   "cartridge",
 )
 

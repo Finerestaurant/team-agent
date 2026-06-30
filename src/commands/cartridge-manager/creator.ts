@@ -11,257 +11,63 @@ import { Type } from "typebox"
 import * as fs from "node:fs"
 import * as pathLib from "node:path"
 import * as os from "node:os"
-import * as child_process from "node:child_process"
-import type { AgentDef, TeamNode } from "../types.ts"
-import * as logger from "../core/logger.ts"
-import { emit } from "../ui/event-bus.ts"
-import * as panel from "../ui/panel.ts"
+import type { TeamNode } from "../../types.ts"
+import * as logger from "../../core/logger.ts"
+import { emit } from "../../ui/event-bus.ts"
+import * as panel from "../../ui/panel.ts"
+import { CartridgeDraft } from "./codegen.ts"
+import type { ToolDef, ToolParam } from "./codegen.ts"
+import type { AgentDef } from "../../types.ts"
 
 const CARTRIDGE_DIR = pathLib.join(
   pathLib.dirname(new URL(import.meta.url).pathname),
-  "../..",
+  "../../..",
   "cartridge",
 )
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-type ToolParam = {
-  name: string
-  type: string
-  description: string
-  optional?: boolean
-}
-
-type ToolDef = {
-  name: string
-  description: string
-  parameters: ToolParam[]
-  implementation: string
-}
-
-type CartridgePlan = {
-  title: string
-  description: string
-  team: TeamNode
-  agents: AgentDef[]
-  tools: ToolDef[]
-}
 
 type ConvEntry = { type: "q" | "a"; text: string }
 
 type WizardPhase =
   | { kind: "input" }
   | { kind: "thinking" }
-  | { kind: "confirm"; plan: CartridgePlan }
-  | { kind: "done"; plan: CartridgePlan }
+  | { kind: "confirm"; plan: CartridgeDraft }
+  | { kind: "done"; plan: CartridgeDraft }
 
 // ─── Prompts ──────────────────────────────────────────────────────────────────
 
-const PLANNER_SYSTEM = `You are a team-agent cartridge architect.
+const PLANNER_SYSTEM = `You are a team-agent cartridge architect. You MUST respond exclusively with tool calls — never with text or markdown.
 
-Important: Do not describe the team structure in text or markdown. Deliver results only through tool calls.
+CRITICAL: Any text response (including explanations, summaries, or "here is my plan") is a failure. Every turn must be one or more tool calls, nothing else.
 
-Steps:
-1. Use ask_user tool for clarification if needed (optional)
-2. Define domain tools with add_tool (skip if none needed)
-3. Add agents with add_agent — always add parent before children, parent:null means root
-4. Call finish — the design is not saved without this
+Required sequence — follow this exactly:
+1. Call ask_user if you need to clarify the team's purpose (optional, max 2 times)
+2. Call ask_user to propose the cartridge metadata and wait for user approval before proceeding
+3. Call define_cartridge with the approved title, description, and task guidance
+4. Call add_agent for every agent — always add parent before children; root agent has parent: null
+5. Call add_tool for each domain tool (skip if none needed)
 
-add_agent rules:
-- name: snake_case
-- parent: name of an already-added agent, null for root
-- tools: only names registered via add_tool
-- mode: "primary" for root only, "subagent" for all others
+define_cartridge argument guide:
+- task_description: shown in pi's tool list — specify exactly when/how pi must invoke task()
+- task_prompt_snippet: one concise line injected into pi's system prompt describing the active team
+- task_prompt_guidelines: 1-2 strict behavioral rules for pi (e.g. "Always delegate via task() — never answer directly")
 
-Domain tool design principles:
-- Domain tools are for external I/O only (file read/write, HTTP API, database, external process calls)
-- Do not create tools for cognitive tasks the LLM can do itself (translation, review, summarization, analysis) — agents handle those
-- Describe input parameters precisely in add_tool's parameters field, and describe the implementation method concretely in implementation (e.g. "store terms and translations in a JSON file, handle add/lookup/list based on action")
+add_agent argument guide:
+- name: snake_case unique identifier
+- parent: name of an already-added agent; null for the root agent only
+- mode: "primary" for root, "subagent" for all others
+- domainTools: only tool names registered via add_tool
+- builtins: pi built-in tools this agent may use — ["shell", "read_file", "list_directory"]
 
-No text descriptions. Call tools immediately.`
+add_tool argument guide:
+- Domain tools are for external I/O only (file, HTTP, database, process)
+- Do not create tools for tasks the LLM can handle directly
+- implementation: concrete description of what code to write
 
-// ─── Code generation helpers ─────────────────────────────────────────────────
+After calling add_tool (or add_agent if no tools), your work is complete. Do NOT call ask_user again. Stop immediately — the session closes automatically.
 
-function toCamelCase(s: string): string {
-  return s.replace(/[-_]([a-z])/g, (_, c: string) => c.toUpperCase())
-}
-
-const JS_RESERVED = new Set([
-  "break","case","catch","class","const","continue","debugger","default",
-  "delete","do","else","export","extends","false","finally","for","function",
-  "if","import","in","instanceof","let","new","null","return","static",
-  "super","switch","this","throw","true","try","typeof","var","void",
-  "while","with","yield","enum","await","implements","interface","package",
-  "private","protected","public",
-])
-
-function toVarName(s: string): string {
-  const name = toCamelCase(s)
-  return JS_RESERVED.has(name) ? `${name}Agent` : name
-}
-
-function toTitleCase(kebab: string): string {
-  return kebab.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")
-}
-
-function typeboxType(t: string): string {
-  if (t === "string") return "Type.String()"
-  if (t === "number") return "Type.Number()"
-  if (t === "boolean") return "Type.Boolean()"
-  if (t === "string[]") return "Type.Array(Type.String())"
-  if (t.includes("|")) {
-    const members = t.split("|").map((s) => `Type.Literal(${JSON.stringify(s.trim().replace(/^['"]|['"]$/g, ""))})`)
-    return `Type.Union([${members.join(", ")}])`
-  }
-  return "Type.String()"
-}
-
-function teamNodeTs(node: TeamNode, depth: number): string {
-  const pad = "  ".repeat(depth)
-  const childPad = "  ".repeat(depth + 1)
-  if (node.children.length === 0) {
-    return `{ name: ${JSON.stringify(node.name)}, label: ${JSON.stringify(node.label)}, children: [] }`
-  }
-  const children = node.children.map((c) => `${childPad}${teamNodeTs(c, depth + 1)}`).join(",\n")
-  return `{ name: ${JSON.stringify(node.name)}, label: ${JSON.stringify(node.label)}, children: [\n${children},\n${pad}] }`
-}
-
-function genIndexTs(): string {
-  return `import { createExtension } from "team-agent"
-import { cartridge } from "./cartridge"
-
-export default createExtension(cartridge)
-`
-}
-
-function genCartridgeTs(plan: CartridgePlan): string {
-  const rootAgent = plan.agents.find((a) => a.mode === "primary")?.name ?? plan.agents[0]?.name ?? ""
-  return `import type { Cartridge, TeamNode } from "team-agent"
-import { agents } from "./agents"
-import { toolMap } from "./tools"
-
-const team: TeamNode = ${teamNodeTs(plan.team, 0)}
-
-export const cartridge: Cartridge = {
-  title: ${JSON.stringify(plan.title)},
-  rootAgent: ${JSON.stringify(rootAgent)},
-  team,
-  agents,
-  tools: toolMap,
-}
-`
-}
-
-function genAgentTs(agent: AgentDef): string {
-  const varName = toVarName(agent.name)
-  const prompt = (agent.prompt ?? "").replace(/`/g, "\\`").replace(/\$\{/g, "\\${")
-  const domainTools = (agent.domainTools ?? []).map((t) => JSON.stringify(t)).join(", ")
-  return `import type { AgentDef } from "team-agent"
-
-export const ${varName}: AgentDef = {
-  name: ${JSON.stringify(agent.name)},
-  mode: ${JSON.stringify(agent.mode)},
-  description: ${JSON.stringify(agent.description)},
-  prompt: \`${prompt}\`,
-  domainTools: [${domainTools}],
-}
-`
-}
-
-function genAgentsIndexTs(agents: AgentDef[]): string {
-  const imports = agents.map((a) => `import { ${toVarName(a.name)} } from "./${a.name}"`).join("\n")
-  const list = agents.map((a) => toVarName(a.name)).join(", ")
-  return `${imports}\n\nexport const agents = [${list}]\n`
-}
-
-function genToolTs(tool: ToolDef): string {
-  const varName = toVarName(tool.name)
-  const paramFields = tool.parameters.map((p) => {
-    const tb = p.optional ? `Type.Optional(${typeboxType(p.type)})` : typeboxType(p.type)
-    return `    ${p.name}: ${tb},`
-  }).join("\n")
-  const destructure = tool.parameters.length > 0
-    ? `{ ${tool.parameters.map((p) => p.name).join(", ")} }`
-    : "_params"
-  return `import { defineTool } from "team-agent"
-import { Type } from "typebox"
-
-export const ${varName} = defineTool({
-  name: ${JSON.stringify(tool.name)},
-  label: ${JSON.stringify(toTitleCase(tool.name))},
-  description: ${JSON.stringify(tool.description)},
-  parameters: Type.Object({
-${paramFields || "    // no parameters"}
-  }),
-  execute: async (_id, ${destructure}) => {
-    // TODO: ${tool.implementation}
-    throw new Error(${JSON.stringify(`Not implemented: ${tool.name}`)})
-  },
-})
-`
-}
-
-function genToolsIndexTs(tools: ToolDef[]): string {
-  if (tools.length === 0) return `export const toolMap = {} as const\n`
-  const imports = tools.map((t) => `import { ${toVarName(t.name)} } from "./${t.name}"`).join("\n")
-  const entries = tools.map((t) => `  ${JSON.stringify(t.name)}: ${toVarName(t.name)},`).join("\n")
-  return `${imports}\n\nexport const toolMap = {\n${entries}\n} as const\n`
-}
-
-function genSetupMd(plan: CartridgePlan, destDir: string): string {
-  const agentLines = plan.agents.map((a) => `- **${a.name}** (${a.mode}): ${a.description}`).join("\n")
-
-  const toolSections = plan.tools.length === 0
-    ? "(no domain tools)\n"
-    : plan.tools.map((t) => {
-        const params = t.parameters.map((p) =>
-          `  - \`${p.name}\` (${p.type}${p.optional ? ", optional" : ""}): ${p.description}`
-        ).join("\n")
-        return `### \`${t.name}\`
-**Implementation**: ${t.implementation}
-${params ? `**Parameters**:\n${params}\n` : ""}File: \`src/tools/${t.name}.ts\``
-      }).join("\n\n")
-
-  return `# ${plan.title} — Setup Guide
-
-Generated by the team-agent cartridge wizard.
-Agent structure, tool interfaces, and cartridge config have been generated automatically.
-Complete the items below to make the cartridge functional.
-
-## Team structure
-
-${agentLines}
-
-## Unimplemented tools (execute body required)
-
-${toolSections}
-
-## Next steps
-
-### 1. Simple tools — implement directly
-Open each \`src/tools/<name>.ts\` and replace the TODO in the \`execute\` body with real code.
-
-### 2. Use Claude Code
-\`\`\`
-claude ${destDir}
-\`\`\`
-Then say: "Read SETUP.md and implement the unimplemented tools"
-
-### 3. External integrations
-Tools that require domain-specific APIs or protocols need additional work:
-
-- **MCP server**: control an external program → build an MCP server for it first
-  - e.g. Logic Pro → implement a Logic Pro MCP server, then call it from the tool
-  - e.g. KiCad → implement KiCad IPC-API integration
-- **HTTP API**: call an external service → set up API keys and auth
-- **DB/socket**: manage connection info via environment variables or config file
-
-Once the external integration is ready, call it from the \`execute\` body.
-
----
-*Generated by team-agent cartridge wizard*
-`
-}
+Start immediately with the first tool call.`
 
 // ─── Planner state & tools ────────────────────────────────────────────────────
 
@@ -269,7 +75,7 @@ type PlannerHandle = {
   session: any
   nodeId: string
   reset: () => void
-  getPlan: () => CartridgePlan | undefined
+  getPlan: () => CartridgeDraft | undefined
   setOnTree: (cb: (tree: TeamNode | undefined) => void) => void
 }
 
@@ -280,29 +86,26 @@ function makePlannerState(
 ) {
   let onTree = initialOnTree
   function setOnTree(cb: (tree: TeamNode | undefined) => void) { onTree = cb }
-  const agentDefs: AgentDef[] = []
-  const toolDefs: ToolDef[] = []
-  const nodeMap = new Map<string, TeamNode>()
-  let rootNode: TeamNode | undefined
-  let planTitle: string | undefined
-  let planDescription: string | undefined
+  const draft = new CartridgeDraft()
   let cancelled = false
 
   function reset() {
-    agentDefs.length = 0
-    toolDefs.length = 0
-    nodeMap.clear()
-    rootNode = undefined
-    planTitle = undefined
-    planDescription = undefined
+    draft.reset()
     onTree(undefined)
   }
 
-  function getPlan(): CartridgePlan | undefined {
-    if (!rootNode || !planTitle) return undefined
-    return { title: planTitle, description: planDescription ?? "", team: rootNode, agents: [...agentDefs], tools: [...toolDefs] }
+  function getPlan(): CartridgeDraft | undefined {
+    return draft.isReady() ? draft : undefined
   }
 
+  const AskParams = Type.Object({ question: Type.String() })
+  const DefineCartridgeParams = Type.Object({
+    title: Type.String({ description: "kebab-case cartridge name" }),
+    description: Type.String({ description: "one-sentence description" }),
+    task_description: Type.String({ description: "shown in pi's tool list — when/how pi must call task()" }),
+    task_prompt_snippet: Type.String({ description: "one line injected into pi's system prompt" }),
+    task_prompt_guidelines: Type.Array(Type.String(), { description: "strict rules injected into pi's system prompt" }),
+  })
   const AddAgentParams = Type.Object({
     name: Type.String({ description: "snake_case identifier" }),
     label: Type.String({ description: "display name" }),
@@ -310,7 +113,8 @@ function makePlannerState(
     mode: Type.Union([Type.Literal("primary"), Type.Literal("subagent")]),
     description: Type.String(),
     prompt: Type.String({ description: "agent system prompt" }),
-    tools: Type.Array(Type.String(), { description: "list of domain tool names this agent can use" }),
+    tools: Type.Array(Type.String(), { description: "domain tool names this agent can use" }),
+    builtins: Type.Optional(Type.Array(Type.String(), { description: "pi built-in tools to allow (e.g. shell, read_file, list_directory)" })),
   })
   const AddToolParams = Type.Object({
     name: Type.String({ description: "kebab-case identifier" }),
@@ -323,11 +127,6 @@ function makePlannerState(
     }), { description: "list of input parameters for this tool" }),
     implementation: Type.String({ description: "implementation method — e.g. store in ~/.team-agent/<name>.json, call HTTP GET /api/xxx" }),
   })
-  const FinishParams = Type.Object({
-    title: Type.String({ description: "kebab-case cartridge name" }),
-    description: Type.String({ description: "one-sentence description" }),
-  })
-  const AskParams = Type.Object({ question: Type.String() })
 
   const tools = [
     defineTool<typeof AskParams, {}>({
@@ -338,28 +137,38 @@ function makePlannerState(
         logger.log(1, "wizard", "ask_user:question", question)
         const answer = await askUser(question)
         logger.log(1, "wizard", "ask_user:answer", answer ?? "(cancelled)")
-        if (answer === null) { cancelled = true; throw new Error("WIZARD_CANCELLED") }
+        if (answer === null) {
+          if (draft.isReady()) return { content: [{ type: "text" as const, text: "" }], details: {} }
+          cancelled = true
+          throw new Error("WIZARD_CANCELLED")
+        }
         return { content: [{ type: "text" as const, text: answer }], details: {} }
+      },
+    }),
+    defineTool<typeof DefineCartridgeParams, {}>({
+      name: "define_cartridge", label: "Define Cartridge",
+      description: "set cartridge metadata and how pi should use the task tool — call after user confirms",
+      parameters: DefineCartridgeParams,
+      execute: (_id, { title, description, task_description, task_prompt_snippet, task_prompt_guidelines }) => {
+        draft.title = title
+        draft.description = description
+        draft.task.description = task_description
+        draft.task.promptSnippet = task_prompt_snippet
+        draft.task.promptGuidelines = task_prompt_guidelines
+        logger.log(0, "wizard", "define_cartridge", { title, guidelines: task_prompt_guidelines.length })
+        return Promise.resolve({ content: [{ type: "text" as const, text: `✓ "${title}" defined` }], details: {} })
       },
     }),
     defineTool<typeof AddAgentParams, {}>({
       name: "add_agent", label: "Add Agent",
       description: "add an agent to the team",
       parameters: AddAgentParams,
-      execute: (_id, { name, label, parent, mode, description, prompt, tools: agentTools }) => {
-        const node: TeamNode = { name, label, children: [] }
-        nodeMap.set(name, node)
-        if (!parent) {
-          rootNode = node
-        } else {
-          const p = nodeMap.get(parent)
-          if (p) p.children.push(node)
-          else logger.log(1, "wizard", "add_agent:parent-not-found", { name, parent })
-        }
-        agentDefs.push({ name, mode, description, prompt, domainTools: agentTools })
-        logger.log(1, "wizard", "add_agent", { name, parent, mode })
-        onTree(rootNode)
-        return Promise.resolve({ content: [{ type: "text" as const, text: `✓ ${name}` }], details: {} })
+      execute: (_id, { name, label, parent, mode, description, prompt, tools: agentTools, builtins }) => {
+        const err = draft.addAgent({ name, label, parent: parent ?? null, mode, description, prompt, domainTools: agentTools, builtins })
+        if (err) logger.log(1, "wizard", "add_agent:error", { name, err })
+        else logger.log(1, "wizard", "add_agent", { name, parent, mode })
+        onTree(draft.team)
+        return Promise.resolve({ content: [{ type: "text" as const, text: err ? `✗ ${err}` : `✓ ${name}` }], details: {} })
       },
     }),
     defineTool<typeof AddToolParams, {}>({
@@ -367,20 +176,9 @@ function makePlannerState(
       description: "define a domain tool",
       parameters: AddToolParams,
       execute: (_id, { name, description, parameters, implementation }) => {
-        toolDefs.push({ name, description, parameters: parameters ?? [], implementation: implementation ?? "" })
+        draft.addTool({ name, description, parameters: parameters ?? [], implementation: implementation ?? "" })
         logger.log(1, "wizard", "add_tool", { name, params: parameters?.length ?? 0 })
         return Promise.resolve({ content: [{ type: "text" as const, text: `✓ ${name}` }], details: {} })
-      },
-    }),
-    defineTool<typeof FinishParams, {}>({
-      name: "finish", label: "Finish",
-      description: "finalize the team design",
-      parameters: FinishParams,
-      execute: (_id, { title, description }) => {
-        planTitle = title
-        planDescription = description
-        logger.log(0, "wizard", "finish", { title, agents: agentDefs.length, tools: toolDefs.length })
-        return Promise.resolve({ content: [{ type: "text" as const, text: "done" }], details: {} })
       },
     }),
   ]
@@ -456,17 +254,20 @@ function scaffoldStatic(destDir: string, name: string, relTeamAgent: string): vo
   fs.mkdirSync(destDir, { recursive: true })
   fs.writeFileSync(pathLib.join(destDir, "package.json"), JSON.stringify(pkg, null, 2) + "\n")
   fs.writeFileSync(pathLib.join(destDir, "tsconfig.json"), JSON.stringify(tsconfig, null, 2) + "\n")
+
+  const linkPath = pathLib.join(destDir, "node_modules", "team-agent")
+  if (!fs.existsSync(linkPath)) {
+    fs.mkdirSync(pathLib.dirname(linkPath), { recursive: true })
+    fs.symlinkSync(pathLib.resolve(destDir, relTeamAgent), linkPath)
+  }
 }
 
 async function installAndActivate(
-  plan: CartridgePlan,
+  plan: CartridgeDraft,
   destDir: string,
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    child_process.exec("bun install", { cwd: destDir }, (err) => (err ? reject(err) : resolve()))
-  })
   fs.writeFileSync(pathLib.join(CARTRIDGE_DIR, ".active"), plan.title)
   const mod = await import(pathLib.join(destDir, "src", "index.ts"))
   if (typeof mod.default === "function") {
@@ -502,7 +303,7 @@ async function runPlanner(
 
   const { session } = await createAgentSession({
     customTools: state.tools,
-    tools: ["ask_user", "add_agent", "add_tool", "finish"],
+    tools: ["ask_user", "define_cartridge", "add_agent", "add_tool"],
     noTools: "builtin",
     resourceLoader,
     sessionManager: SessionManager.inMemory(),
@@ -510,6 +311,7 @@ async function runPlanner(
     modelRegistry: ctx.modelRegistry,
   })
 
+  let lastLoggedLen = 0
   session.subscribe((event: any) => {
     if (event.type === "message_update" && event.message?.role === "assistant") {
       const text = event.message.content
@@ -518,7 +320,10 @@ async function runPlanner(
         .join("")
         .replace(/\s+/g, " ")
         .trim()
-      if (text) logger.log(1, "wizard", "planner:thinking", text.slice(0, 200))
+      if (text && text.length - lastLoggedLen >= 100) {
+        logger.log(1, "wizard", "planner:thinking", text.slice(0, 300))
+        lastLoggedLen = text.length
+      }
     }
   })
 
@@ -549,15 +354,16 @@ async function runPlanner(
   }
 }
 
-function buildRefinePrompt(currentPlan: CartridgePlan, instructions: string): string {
-  const agentLines = currentPlan.agents.map((a) =>
+function buildRefinePrompt(draft: CartridgeDraft, instructions: string): string {
+  const agentLines = draft.agents.map((a) =>
     `  - ${a.name} (${a.mode}): tools=[${(a.domainTools ?? []).join(", ")}]`
   ).join("\n")
-  const toolLines = currentPlan.tools.map((t) =>
+  const toolLines = draft.tools.map((t) =>
     `  - ${t.name}: ${t.description}`
   ).join("\n")
   return `Current team configuration:
-title: "${currentPlan.title}"
+title: "${draft.title}"
+task_description: "${draft.task.description}"
 agents:
 ${agentLines || "  (none)"}
 tools:
@@ -565,18 +371,18 @@ ${toolLines || "  (none)"}
 
 Modification request: ${instructions}
 
-Apply the modification request to the current team configuration.
-Preserve existing agent/tool names as much as possible. Include unchanged items as well and rebuild the full configuration in add_tool → add_agent → finish order.`
+Apply the modification. Preserve existing names where possible.
+Rebuild the full configuration in define_cartridge → add_agent → add_tool order.`
 }
 
 async function refinePlan(
   handle: PlannerHandle,
-  currentPlan: CartridgePlan,
+  currentPlan: CartridgeDraft,
   instructions: string,
   askUser: (question: string) => Promise<string | null>,
   onStatus: (text: string) => void,
   onTree: (tree: TeamNode | undefined) => void,
-): Promise<CartridgePlan | "cancelled" | undefined> {
+): Promise<CartridgeDraft | "cancelled" | undefined> {
   logger.log(0, "wizard", "refine:start", instructions)
   emit({ type: "agent:start", nodeId: handle.nodeId, agentName: "cartridge-planner", isBackground: true })
 
@@ -612,43 +418,6 @@ async function refinePlan(
   }
 }
 
-// ─── Code generation ──────────────────────────────────────────────────────────
-
-function generateCode(
-  plan: CartridgePlan,
-  destDir: string,
-  onStatus: (text: string) => void,
-  onAgentBuilt: (name: string) => void,
-): void {
-  let fileCount = 0
-  function write(relPath: string, content: string): void {
-    const full = pathLib.join(destDir, relPath)
-    fs.mkdirSync(pathLib.dirname(full), { recursive: true })
-    fs.writeFileSync(full, content, "utf-8")
-    fileCount++
-    logger.log(1, "wizard", "codegen:write", relPath)
-    onStatus(`Writing files... (${fileCount})`)
-  }
-
-  write("src/index.ts", genIndexTs())
-  write("src/cartridge.ts", genCartridgeTs(plan))
-
-  for (const agent of plan.agents) {
-    write(`src/agents/${agent.name}.ts`, genAgentTs(agent))
-    onAgentBuilt(agent.name)
-  }
-  write("src/agents/index.ts", genAgentsIndexTs(plan.agents))
-
-  for (const tool of plan.tools) {
-    write(`src/tools/${tool.name}.ts`, genToolTs(tool))
-  }
-  write("src/tools/index.ts", genToolsIndexTs(plan.tools))
-
-  write("SETUP.md", genSetupMd(plan, destDir))
-
-  logger.log(0, "wizard", "codegen:done", { files: fileCount, agents: plan.agents.length, tools: plan.tools.length })
-}
-
 // ─── Wizard UI — single ctx.ui.custom ─────────────────────────────────────────
 
 const CONFIRM_CHOICES = [
@@ -670,7 +439,7 @@ export async function handleCreateCartridge(
     let confirmResolve: ((choice: "create" | "chat" | "cancel") => void) | null = null
     let cachedLines: string[] | undefined
     let statusText: string | undefined
-    let lastPlan: CartridgePlan | undefined
+    let lastPlan: CartridgeDraft | undefined
     let liveTree: TeamNode | undefined
     let builtAgents = new Set<string>()
     let isBuilding = false
@@ -713,7 +482,7 @@ export async function handleCreateCartridge(
       r(value)
     }
 
-    function waitForConfirm(plan: CartridgePlan): Promise<"create" | "chat" | "cancel"> {
+    function waitForConfirm(plan: CartridgeDraft): Promise<"create" | "chat" | "cancel"> {
       lastPlan = plan
       confirmCursor = 0
       phase = { kind: "confirm", plan }
@@ -777,7 +546,7 @@ export async function handleCreateCartridge(
         }
 
         if (phase.kind === "input") {
-          if (lastPlan) {
+          if (lastPlan?.team) {
             const lastAgentMap = new Map(lastPlan.agents.map((a) => [a.name, a]))
             lines.push(` ${theme.fg("toolTitle", theme.bold(lastPlan.title))}  ${theme.fg("dim", lastPlan.description)}`)
             lines.push("")
@@ -795,10 +564,17 @@ export async function handleCreateCartridge(
           lines.push(` ${theme.fg("toolTitle", theme.bold(plan.title))}  ${theme.fg("dim", plan.description)}`)
           lines.push("")
           const treeLines: string[] = []
-          renderPlanTree(plan.team, theme, "", true, true, treeLines, undefined, agentMap)
+          if (plan.team) renderPlanTree(plan.team, theme, "", true, true, treeLines, undefined, agentMap)
           for (const l of treeLines) lines.push(` ${l}`)
           lines.push("")
           lines.push(` ${theme.fg("dim", `${plan.agents.length} agents  ${plan.tools.length} tools`)}`)
+          if (plan.tools.length > 0) {
+            lines.push("")
+            lines.push(` ${theme.fg("warning", "⚠")} ${theme.fg("dim", "these tools need implementation after install:")}`)
+            for (const t of plan.tools) {
+              lines.push(`   ${theme.fg("warning", t.name)}  ${theme.fg("dim", t.implementation)}`)
+            }
+          }
           lines.push("")
           for (let i = 0; i < CONFIRM_CHOICES.length; i++) {
             const [, label] = CONFIRM_CHOICES[i]!
@@ -815,7 +591,7 @@ export async function handleCreateCartridge(
           lines.push(` ${theme.fg("success", "✓")} ${theme.fg("success", theme.bold(plan.title))}  ${theme.fg("dim", plan.description)}`)
           lines.push("")
           const treeLines: string[] = []
-          renderPlanTree(plan.team, theme, "", true, true, treeLines, builtAgents)
+          if (plan.team) renderPlanTree(plan.team, theme, "", true, true, treeLines, builtAgents)
           for (const l of treeLines) lines.push(` ${l}`)
           lines.push("")
           lines.push(` ${theme.fg("dim", `${plan.agents.length} agents  ${plan.tools.length} tools  — cartridge activated`)}`)
@@ -956,7 +732,7 @@ export async function handleCreateCartridge(
         const teamAgentDir = pathLib.join(CARTRIDGE_DIR, "..")
         scaffoldStatic(destDir, plan.title, pathLib.relative(destDir, teamAgentDir))
 
-        generateCode(plan, destDir, (text) => setStatus(text), (name) => {
+        await plan.saveAsCode(destDir, (text) => setStatus(text), (name) => {
           builtAgents.add(name)
           refresh()
         })

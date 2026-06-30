@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { register as registerCartridgeManager } from "./commands/cartridge-manager.ts"
+import { register as registerCartridgeManager } from "./commands/cartridge-manager/index.ts"
 import * as panel from "./ui/panel.ts"
 
 const CARTRIDGE_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "cartridge")
