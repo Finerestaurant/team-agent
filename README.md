@@ -191,10 +191,14 @@ type Cartridge = {
   rootAgent: string                     // entry point (receives task tool)
   title?: string                        // panel header
   sessionManager?: (name: string) => SessionManager
+  debugChildren?: Partial<Record<string, string[]>>  // for debug dry-runs (task(debug: true))
   task?: {
     description?: string
     promptSnippet?: string
     promptGuidelines?: string[]
+  }
+  awaitTask?: {
+    description?: string
   }
 }
 
