@@ -40,6 +40,14 @@ export function logPanel(trigger: string, lines: string[]): void {
   } catch {}
 }
 
+export function logTree(trigger: string, lines: string[]): void {
+  try {
+    ensureDir()
+    const ts = new Date().toISOString()
+    fs.appendFileSync(LOG_FILE, `${ts} [TREE] ${trigger}\n${lines.join("\n")}\n\n`)
+  } catch {}
+}
+
 export function logFilePath(): string {
   return LOG_FILE
 }

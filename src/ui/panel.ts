@@ -6,7 +6,7 @@ import * as logger from "../core/logger.ts"
 
 const WIDGET_KEY = "team-agent"
 
-type AgentState = { active: number; waiting: number; ranCount: number; currentTool?: string; activity?: string; paused?: boolean }
+type AgentState = { active: number; waiting: number; ranCount: number; currentTool?: string; activity?: string; paused?: boolean; cancelled?: boolean }
 const stateByName = new Map<string, AgentState>()
 const idToName = new Map<string, string>()
 const runningStack: { nodeId: string; name: string; startedAt: number }[] = []
@@ -132,6 +132,8 @@ on("agent:start", ({ nodeId, agentName }) => {
   const s = st(agentName)
   s.active += 1
   s.ranCount += 1
+  s.paused = false
+  s.cancelled = false
   runningStack.push({ nodeId, name: agentName, startedAt: Date.now() })
   render()
   logPanel(`agent:start ${agentName}`)
@@ -142,6 +144,7 @@ on("agent:end", ({ nodeId, agentName, status }) => {
   const s = st(agentName)
   s.active = Math.max(0, s.active - 1)
   s.waiting = 0
+  if (status === "cancelled") s.cancelled = true
   if (s.active === 0) {
     s.currentTool = undefined
     s.activity = undefined
@@ -150,6 +153,18 @@ on("agent:end", ({ nodeId, agentName, status }) => {
   if (idx >= 0) runningStack.splice(idx, 1)
   render()
   logPanel(`agent:end ${agentName} (${status})`)
+})
+
+on("agent:paused", ({ agentName }) => {
+  st(agentName).paused = true
+  render()
+  logPanel(`agent:paused ${agentName}`)
+})
+
+on("agent:unpaused", ({ agentName }) => {
+  st(agentName).paused = false
+  render()
+  logPanel(`agent:unpaused ${agentName}`)
 })
 
 on("agent:waiting", ({ agentName }) => {
@@ -204,33 +219,6 @@ export function unbindUI(ctx: ExtensionContext): void {
   }
 }
 
-function markTreePaused(node: TeamNode): boolean {
-  const s = stateByName.get(node.name)
-  const selfActive = (s?.active ?? 0) > 0 || (s?.waiting ?? 0) > 0
-  const childActive = node.children.some((c) => markTreePaused(c))
-  if (selfActive || childActive) {
-    st(node.name).paused = true
-    return true
-  }
-  return false
-}
-
-export function onPause(): void {
-  for (const s of stateByName.values()) {
-    if (s.active > 0 || s.waiting > 0) s.paused = true
-  }
-  if (currentTeam) markTreePaused(currentTeam)
-  runningStack.length = 0
-  render()
-  logPanel("pause")
-}
-
-export function onResume(): void {
-  for (const s of stateByName.values()) s.paused = false
-  render()
-  logPanel("resume")
-}
-
 export function clear(): void {
   stateByName.clear()
   idToName.clear()
@@ -267,7 +255,10 @@ function renderNode(
 
   let marker: string
   let label: string
-  if (s?.paused) {
+  if (s?.cancelled) {
+    marker = theme.fg("dim", "⊘")
+    label = theme.fg("dim", node.label)
+  } else if (s?.paused) {
     marker = theme.fg("warning", "⏸")
     label = theme.fg("warning", node.label)
   } else if (waiting) {
