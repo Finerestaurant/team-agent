@@ -2,9 +2,11 @@ import { EventEmitter } from "node:events"
 
 export type TeamAgentEvent =
   | { type: "agent:start"; nodeId: string; agentName: string; isBackground?: boolean; taskId?: string }
-  | { type: "agent:end"; nodeId: string; agentName: string; status: "done" | "error"; isBackground?: boolean; taskId?: string; result?: string }
+  | { type: "agent:end"; nodeId: string; agentName: string; status: "done" | "error" | "cancelled"; isBackground?: boolean; taskId?: string; result?: string }
   | { type: "agent:waiting"; nodeId: string; agentName: string }
   | { type: "agent:resumed"; nodeId: string; agentName: string }
+  | { type: "agent:paused"; nodeId: string; agentName: string }
+  | { type: "agent:unpaused"; nodeId: string; agentName: string }
   | { type: "tool:start"; nodeId: string; toolName: string; args?: unknown }
   | { type: "tool:end"; nodeId: string; toolName: string; isError: boolean }
   | { type: "agent:activity"; nodeId: string; text: string }

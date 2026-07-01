@@ -1,5 +1,5 @@
 export { createExtension } from "./extension.ts"
-export type { Cartridge, TeamNode, AgentDef } from "./types.ts"
+export type { Cartridge, TeamNode, AgentDef, ScriptStep } from "./types.ts"
 export { emit, on } from "./ui/event-bus.ts"
 export type { TeamAgentEvent } from "./ui/event-bus.ts"
 export * as panel from "./ui/panel.ts"
