@@ -1,7 +1,7 @@
 export { createExtension } from "./extension.ts"
 export type { Cartridge, TeamNode, AgentDef } from "./types.ts"
 export { emit, on } from "./ui/event-bus.ts"
-export type { DeepCadEvent } from "./ui/event-bus.ts"
+export type { TeamAgentEvent } from "./ui/event-bus.ts"
 export * as panel from "./ui/panel.ts"
 export { defineTool, SessionManager } from "@earendil-works/pi-coding-agent"
 export type { ToolDefinition } from "@earendil-works/pi-coding-agent"

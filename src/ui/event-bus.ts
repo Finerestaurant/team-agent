@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events"
 
-export type DeepCadEvent =
+export type TeamAgentEvent =
   | { type: "agent:start"; nodeId: string; agentName: string; isBackground?: boolean; taskId?: string }
   | { type: "agent:end"; nodeId: string; agentName: string; status: "done" | "error"; isBackground?: boolean; taskId?: string; result?: string }
   | { type: "agent:waiting"; nodeId: string; agentName: string }
@@ -12,13 +12,13 @@ export type DeepCadEvent =
 const emitter = new EventEmitter()
 emitter.setMaxListeners(50)
 
-type Listener<T extends DeepCadEvent["type"]> = (event: Extract<DeepCadEvent, { type: T }>) => void
+type Listener<T extends TeamAgentEvent["type"]> = (event: Extract<TeamAgentEvent, { type: T }>) => void
 
-export function emit(event: DeepCadEvent): void {
+export function emit(event: TeamAgentEvent): void {
   emitter.emit(event.type, event)
 }
 
-export function on<T extends DeepCadEvent["type"]>(type: T, listener: Listener<T>): () => void {
+export function on<T extends TeamAgentEvent["type"]>(type: T, listener: Listener<T>): () => void {
   emitter.on(type, listener as never)
   return () => emitter.off(type, listener as never)
 }
